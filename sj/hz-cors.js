@@ -1,4 +1,4 @@
-/* Helix CORS base (shared by sw.js and sj/sw.js).
+/* vibecoded proxy CORS base (shared by sw.js and sj/sw.js).
    Everything that decides how CORS is answered lives in CFG below, so you only edit this one file.
 
    What it does

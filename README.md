@@ -1,4 +1,4 @@
-# Helix
+# vibecoded proxy
 
 Upload this whole folder to your host (GitHub Pages works). Keep the folder structure.
 
@@ -46,7 +46,7 @@ Local test: `python3 -m http.server 8080` in this folder, then open http://local
 ## Latest changes
 
 * Horizontal tabs are the default (Settings > Tab layout switches to vertical).
-* Movies and Music buttons (sidebar and new tab page) open cineby.tech and freefy.app inside Helix.
+* Movies and Music buttons (sidebar and new tab page) open cineby.tech and freefy.app inside vibecoded proxy.
 * Sign-in popups (Continue with Google etc.) open as a draggable, resizable floating window over the tab. window.open is
   caught inside Scramjet itself (sj/scramjet/scramjet.js and sj/scramjet.all.js, search for `__hzPopup`). If you replace
   those files with a fresh Scramjet download, re-apply that patch.
@@ -58,5 +58,20 @@ Local test: `python3 -m http.server 8080` in this folder, then open http://local
 ## Build 21 fixes (single-file engine)
 
 * Scripts, ES modules, dynamic chunks and nested iframes no longer give up after 12-25 s. They wait up to 2 minutes and classic scripts retry 3 times through Wisp (a dropped script is what left sites like Discord on their "JavaScript is needed" page).
-* Nested iframes are embedded with srcdoc instead of blob: URLs, which the browser refuses when Helix is opened from a file.
+* Nested iframes are embedded with srcdoc instead of blob: URLs, which the browser refuses when vibecoded proxy is opened from a file.
 * The built-in engine now tests the Wisp servers (saved one first, then the pool) and uses one that really answers; servers that are blocked or dead are skipped for a while and replaced automatically.
+
+## Chat: history sync
+
+* Late joiners: the backlog a newcomer lacks is split into stripes. The host and up to two other peers each send one
+  stripe (relayed through the host) in packets of 3 messages with a pause between them, and the newcomer draws the rows
+  a few at a time. If a peer drops out, the newcomer asks the host for whatever is still missing.
+* When the host changes, peers hand the new host only the messages it lacks (paced, nothing re-broadcast).
+
+## Chat: GIFs (GIPHY)
+
+* GIF button next to the message box: trending and search come from GIPHY. The API calls and the images are fetched
+  through the Wisp server (`window.hxWispFetch` in index.html), never from an iframe or straight from the browser.
+* The GIPHY key is `GIPHY_KEY` at the top of the `hx-chat-runtime` script. It is visible to anyone who views the page
+  source, which is normal for GIPHY keys; a beta key is limited to about 100 requests per hour.
+* Only https images on giphy.com are accepted from other peers (`GIF_HOST` in the same script).

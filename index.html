@@ -4,7 +4,7 @@
 
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Helix</title>
+<title>vibecoded proxy</title>
 <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:wght@700&amp;family=Onest:wght@400;500;600;700&amp;display=swap">
 <script>try{var m=localStorage.getItem("bz.theme")||"dark";document.documentElement.dataset.theme=(m==="dark"||(m==="auto"&&matchMedia("(prefers-color-scheme: dark)").matches))?"dark":"light"}catch(e){}</script>
 <style>
@@ -934,6 +934,30 @@ body[data-tab-layout=vertical] #ntp-quick{display:none}
 #hx-chat #hx-chat-name-dialog{position:absolute;inset:0;margin:0;width:auto;max-width:none;height:auto;border:0;border-radius:0;box-shadow:none;background:var(--bar);color:var(--fg);padding:24px;z-index:8;display:flex;align-items:center;justify-content:center;overflow:auto}
 #hx-chat #hx-chat-name-dialog[hidden]{display:none!important}
 #hx-chat #hx-chat-name-form{width:100%;max-width:350px;padding:0}
+/* chat GIFs */
+#hx-chat-compose-wrap{position:relative}
+#hx-chat-gif{height:42px;min-width:48px;padding:0 12px;border-radius:12px;font-weight:600;font-size:12px;letter-spacing:.02em}
+.hx-chat-gif,.hx-gif-box{position:relative;display:block;max-width:100%;margin-top:6px;border-radius:10px;overflow:hidden;background:var(--field)}
+.hx-chat-gif img,.hx-gif-box img{display:block;width:100%;height:100%;object-fit:cover;opacity:0;transition:opacity .2s}
+.hx-chat-gif.ready img,.hx-gif-box.ready img{opacity:1}
+.hx-gif-note{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;text-align:center;padding:6px;font-size:11px;color:var(--mut)}
+.hx-chat-gif.ready .hx-gif-note,.hx-gif-box.ready .hx-gif-note{display:none}
+.hx-chat-gif.failed,.hx-gif-box.failed{cursor:pointer}
+#hx-chat-gifs{position:absolute;left:0;right:0;bottom:100%;height:min(400px,58vh);display:flex;flex-direction:column;background:var(--bar);border-top:1px solid var(--bd);box-shadow:0 -8px 24px rgba(0,0,0,.12);z-index:6}
+#hx-chat-gifs[hidden]{display:none!important}
+#hx-chat-gifs .gh{flex:none;display:flex;gap:8px;align-items:center;padding:12px 14px 8px}
+#hx-gif-q,#hx-gif-keyin{flex:1;min-width:0;height:38px;border:1px solid transparent;border-radius:10px;background:var(--field);color:var(--fg);padding:0 12px;outline:none;font:inherit}
+#hx-gif-q:focus,#hx-gif-keyin:focus{border-color:var(--bd)}
+#hx-gif-key{flex:none;display:flex;gap:8px;padding:0 14px 8px}
+#hx-gif-key[hidden]{display:none!important}
+#hx-gif-grid{flex:1;min-height:0;overflow-y:auto;padding:4px 14px 10px;display:grid;grid-template-columns:1fr 1fr;gap:8px;align-content:start;overscroll-behavior:contain}
+.hx-gif-thumb{display:block;padding:0;margin:0;border:0;background:none;cursor:pointer;border-radius:10px;outline-offset:2px}
+.hx-gif-thumb .hx-gif-box{margin:0;width:100%!important}
+.hx-gif-thumb:hover .hx-gif-box,.hx-gif-thumb:focus-visible .hx-gif-box{box-shadow:0 0 0 2px var(--fg)}
+#hx-gif-status{flex:none;padding:2px 14px 8px;font-size:12px;color:var(--mut)}
+#hx-gif-status.bad{color:var(--bad)}
+#hx-gif-status[hidden]{display:none!important}
+#hx-chat-gifs .gf{flex:none;padding:0 14px 8px;font-size:10.5px;color:var(--mut);text-align:right}
 </style>
 </head>
 <body data-tab-layout="horizontal"><dialog id="site-data-dialog" aria-labelledby="site-data-title"><h2 id="site-data-title">Clear data for one site</h2><p>Remove single-file cookies for this hostname and its origin-scoped local/session storage. You may be signed out.</p><label for="site-data-origin">Site address</label><input id="site-data-origin" type="url" placeholder="https://example.com" autocomplete="off" spellcheck="false"><p>Other sites, history, bookmarks and settings stay. Shared parent-domain cookies are kept. Scramjet, hosted-engine and real-browser storage are not cleared here.</p><p id="site-data-result" role="status"></p><div class="actions"><button id="site-data-cancel" class="btn">Cancel</button><button id="site-data-confirm" class="btn pri">Clear this site</button></div></dialog>
@@ -9379,6 +9403,47 @@ async function bootSJ(wisp) {
   try { await p; } finally { if (sjBoot && sjBoot.p === p) sjBoot = null; }
 }
 
+/* Fetch an https URL through the Wisp server (no CORS, no direct connection). Used by chat for GIPHY GIFs. Resolves to a Response. */
+window.hxWispFetch = async function (url, o) {
+  o = o || {};
+  const first = new URL(url);
+  if (first.protocol !== "https:") throw new Error("Only https:// addresses can be fetched");
+  const headers = Object.assign({ accept: "*/*", "user-agent": navigator.userAgent }, o.headers || {});
+  const gone = () => new DOMException("Aborted", "AbortError");
+  const mkHeaders = pairs => { const h = new Headers(); for (const p of pairs || []) { try { h.append(p[0], p[1]); } catch (e) {} } return h; };
+  const viaSJ = async () => {
+    if (!swOK()) throw new Error("The Scramjet engine is not available on this page");
+    const w = await Promise.race([resolveWisp(), tmo(30000, "Wisp check timed out")]);
+    if (!wispOK) throw new Error("No working Wisp server");
+    await Promise.race([bootSJ(w), tmo(45000, "Wisp engine took too long to start")]);
+    let cur = first;
+    for (let hop = 0; hop < 5; hop++) {
+      if (o.signal && o.signal.aborted) throw gone();
+      const r = await sj.transport.request(cur, "GET", null, headers, o.signal);
+      if (r.status >= 300 && r.status < 400) {
+        const loc = (r.headers || []).find(p => /^location$/i.test(p[0]));
+        if (loc) { try { r.body && r.body.cancel && r.body.cancel(); } catch (e) {} cur = new URL(loc[1], cur); if (cur.protocol !== "https:") throw new Error("Redirected to a non-https address"); continue; }
+      }
+      const none = r.status === 204 || r.status === 205 || r.status === 304;
+      return new Response(none ? null : r.body, { status: r.status, statusText: r.statusText || "", headers: mkHeaders(r.headers) });
+    }
+    throw new Error("Too many redirects");
+  };
+  const viaGE = async () => {
+    const r = await GE.fetchBinary(first.href, { headers, signal: o.signal, timeout: o.timeout || 30000 });
+    const none = r.status === 204 || r.status === 205 || r.status === 304;
+    const h = new Headers(); try { h.set("content-type", r.mime); } catch (e) {}
+    return new Response(none ? null : r.buf, { status: r.status, headers: h });
+  };
+  const order = builtinOn() ? [viaGE, viaSJ] : [viaSJ, viaGE];
+  let err;
+  for (const run of order) {
+    try { return await run(); }
+    catch (e) { if (e && e.name === "AbortError") throw e; err = err || e; }
+  }
+  throw err || new Error("No Wisp route available");
+};
+
 /* Passkeys belong to the real site's origin, so they can never work through a proxy and some sites stall on them.
    The replacements are Proxy wrappers around the real functions, so they still look native. */
 function patchRealm(w) {
@@ -14423,7 +14488,7 @@ function bridgeSocket(post, mine, m) {
   }).catch(e => { mine.delete(m.id); post({ op: "wserr", msg: String((e && e.message) || e).slice(0, 200) }); post({ op: "wsclosed", code: 1006, reason: "Wisp connection failed" }); });
 }
 
-return { bridgeServe, setWisp(u){if(u&&!/^wss?:\/\/[^\s]+$/i.test(u))throw Error('Enter a ws:// or wss:// endpoint');store.set('hz.ge.wisp',u);const old=curl;curl=null;curlWisp='';try{if(old)old.close();}catch(_){}},open, closeSockets, abortAll, saveFile, keepDownload, classify: classifyResponse, isDownload, get wisp() { return curlWisp; }, newSession, ensureSession, memCache };
+return { bridgeServe, fetchBinary: async (url, o) => { await ensureSession(); return doFetch(url, o || {}); }, setWisp(u){if(u&&!/^wss?:\/\/[^\s]+$/i.test(u))throw Error('Enter a ws:// or wss:// endpoint');store.set('hz.ge.wisp',u);const old=curl;curl=null;curlWisp='';try{if(old)old.close();}catch(_){}},open, closeSockets, abortAll, saveFile, keepDownload, classify: classifyResponse, isDownload, get wisp() { return curlWisp; }, newSession, ensureSession, memCache };
 })();
 
 async function goDirect(t,url,push,opts){return GE.open(t,url,push,opts);}
@@ -15242,7 +15307,7 @@ window.addEventListener('message',event=>{const m=event.data;if(!m||m.__directDl
  <div class="sh"><h3>Chat</h3><div class="hx-actions"><button type="button" id="hx-chat-leave" class="btn sm" title="Disconnect and clear local messages">Leave</button><button type="button" id="hx-chat-close" class="ib" aria-label="Close chat">×</button></div></div>
  <div id="hx-chat-statusbar"><i aria-hidden="true"></i><span id="hx-chat-status" role="status">Choose a name to join.</span><button type="button" id="hx-chat-retry" class="btn sm" hidden>Retry</button></div>
  <div id="hx-chat-messages" role="log" aria-label="Chat messages" aria-live="polite"><div id="hx-chat-empty"><strong>A little space to talk.</strong><span>Messages appear here as people send them.</span></div></div>
- <div id="hx-chat-compose-wrap"><form id="hx-chat-compose"><textarea id="hx-chat-message" aria-label="Message" placeholder="Write a message…" rows="1" maxlength="500" disabled></textarea><button type="submit" id="hx-chat-send" class="btn" disabled>Send</button></form><div id="hx-chat-meta"><span>Messages disappear after 5 minutes</span><span id="hx-chat-counter">0 / 250</span></div></div>
+ <div id="hx-chat-compose-wrap"><div id="hx-chat-gifs" hidden role="dialog" aria-label="Choose a GIF"><div class="gh"><input id="hx-gif-q" type="search" placeholder="Search GIFs" autocomplete="off" maxlength="80" aria-label="Search GIFs"><button type="button" id="hx-gif-x" class="ib" aria-label="Close GIF picker">×</button></div><div id="hx-gif-key" hidden><input id="hx-gif-keyin" type="password" autocomplete="off" spellcheck="false" placeholder="GIPHY API key" aria-label="GIPHY API key"><button type="button" id="hx-gif-keysave" class="btn sm">Save</button></div><div id="hx-gif-grid"></div><div id="hx-gif-status" role="status" hidden></div><div class="gf">Powered by GIPHY</div></div><form id="hx-chat-compose"><button type="button" id="hx-chat-gif" class="btn" aria-label="Add a GIF" aria-expanded="false" aria-controls="hx-chat-gifs" title="Add a GIF" disabled>GIF</button><textarea id="hx-chat-message" aria-label="Message" placeholder="Write a message…" rows="1" maxlength="500" disabled></textarea><button type="submit" id="hx-chat-send" class="btn" disabled>Send</button></form><div id="hx-chat-meta"><span>Messages disappear after 5 minutes</span><span id="hx-chat-counter">0 / 250</span></div></div>
  <p id="hx-chat-privacy">Recent history is shared from connected peers’ memory, not browser storage. Names are unverified; peers may learn your IP and retain copies. Closing keeps you connected; Leave disconnects.</p>
 <div role="dialog" aria-modal="false" hidden id="hx-chat-name-dialog" aria-labelledby="hx-chat-name-title"><form id="hx-chat-name-form"><h3 id="hx-chat-name-title">Join the conversation.</h3><p>Pick a name and you’re in. No account needed.</p><label id="hx-chat-name-label" for="hx-chat-name">Your name</label><input id="hx-chat-name" name="chatName" autocomplete="off" maxlength="48" required placeholder="What should we call you?"><p id="hx-chat-name-error" role="alert"></p><div id="hx-chat-name-buttons"><button type="button" id="hx-chat-name-cancel" class="btn">Cancel</button><button type="submit" class="btn" id="hx-chat-name-enter">Enter chat</button></div></form></div></aside>
 
@@ -15251,19 +15316,25 @@ window.addEventListener('message',event=>{const m=event.data;if(!m||m.__directDl
 (()=>{
 'use strict';
 const $=id=>document.getElementById(id),panel=$('hx-chat'),dialog=$('hx-chat-name-dialog'),field=$('hx-chat-message'),list=$('hx-chat-messages');
-const ROOM='helix-public-chat-v1-76c8a2',MAX=250,TTL=300000,CAP=24;
+const ROOM='helix-public-chat-v1-76c8a2',MAX=250,TTL=300000,CAP=24,KEEP=100;
+/* History sync: no peer sends more than SYNC_CHUNK messages per SYNC_GAP ms, the backlog is split between up to SYNC_DONORS peers, and the receiver draws it a few rows at a time. */
+const SYNC_CHUNK=3,SYNC_GAP=120,SYNC_DONORS=3,SYNC_STALL=4000,DRAW_BATCH=3,DRAW_GAP=70;
+/* GIFs come from GIPHY. The API calls and the images are fetched through Wisp (window.hxWispFetch), never by an iframe or a direct request. Only https images hosted on giphy.com are accepted from other peers. */
+const GIPHY_API='https://api.giphy.com/v1/gifs/',GIPHY_KEY='iHT3amsoT8uELGWAVueN0vYUZxi3G5Of',GIF_HOST=/(^|\.)giphy\.com$/i,GIF_CAP=5*1024*1024;
 const OPTIONS={host:'0.peerjs.com',port:443,secure:true,path:'/',key:'peerjs',debug:0,config:{iceServers:[{urls:'stun:stun.l.google.com:19302'},{urls:'stun:stun1.l.google.com:19302'}]}};
 let PeerClass=null,libPromise=null,active=null,master=null,epoch=0,role='',wanted=false,welcomed=false,nick='',label='',attempts=0,retryTimer=0,joinToken=0,sequence=0,nonce='',expiryTimer=0,opener=null;
-const clients=new Map(),seen=new Set(),history=new Map(),unread=new Map();
-let historyBudget={remaining:100};
+const clients=new Map(),seen=new Set(),history=new Map(),unread=new Map(),plans=new Map(),pulling=new Set();
+let sync=null,feed=[],feedTimer=0;
+const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 const valid=(v,n)=>typeof v==='string'&&v.length<=n*2&&Array.from(v).length<=n&&!/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/.test(v);
 const clean=s=>Array.from(String(s).replace(/[\u0000-\u001F\u007F]/g,'').trim()).slice(0,24).join('');
 const uid=()=>{const a=new Uint32Array(2);crypto.getRandomValues(a);return Array.from(a,n=>n.toString(36)).join('');};
+const idList=(v,n)=>Array.isArray(v)&&v.length<=n&&v.every(x=>typeof x==='string'&&x.length>0&&x.length<=96);
 const bucket=()=>({tokens:3,at:Date.now()});let ownBucket=bucket(),renderBudget={tokens:40,at:Date.now()};
 function allowed(b){const now=Date.now();b.tokens=Math.min(3,b.tokens+(now-b.at)/1500);b.at=now;if(b.tokens<1)return false;b.tokens--;return true;}
 function setStatus(text,state='connecting'){ $('hx-chat-status').textContent=text;panel.dataset.state=state;$('hx-chat-retry').hidden=state!=='error'||!nick; }
 function ready(){return wanted&&(role==='host'||welcomed&&master&&master.open);}
-function controls(){const online=ready();field.disabled=!online;$('hx-chat-send').disabled=!online||!field.value.trim()||!valid(field.value,MAX);$('hx-chat-leave').disabled=!wanted&&!nick;}
+function controls(){const online=ready();field.disabled=!online;const gb=$('hx-chat-gif');if(gb)gb.disabled=!online;$('hx-chat-send').disabled=!online||!field.value.trim()||!valid(field.value,MAX);$('hx-chat-leave').disabled=!wanted&&!nick;}
 function empty(){let node=$('hx-chat-empty');if(!list.querySelector('.hx-chat-message')&&!node){node=document.createElement('div');node.id='hx-chat-empty';const h=document.createElement('strong');h.textContent='A little space to talk.';const p=document.createElement('span');p.textContent='Messages appear here as people send them.';node.append(h,p);list.append(node);}}
 function syncBadges(){
  const now=Date.now();for(const [id,until]of unread)if(until<=now)unread.delete(id);
@@ -15274,88 +15345,249 @@ function syncBadges(){
  }
 }
 function markRead(){unread.clear();syncBadges();}
+
+/* ---------- GIFs ---------- */
+function normGif(g){
+ if(!g||typeof g!=='object'||typeof g.u!=='string'||g.u.length>600)return null;
+ let url;try{url=new URL(g.u);}catch(_){return null;}
+ if(url.protocol!=='https:'||url.username||url.password||url.port||!GIF_HOST.test(url.hostname))return null;
+ const w=Math.round(Number(g.w)),h=Math.round(Number(g.h));
+ if(!(w>=1&&w<=2000&&h>=1&&h<=2000))return null;
+ return {u:url.href,w,h};
+}
+function wisp(url,o){
+ if(typeof window.hxWispFetch!=='function')return Promise.reject(Error('Wisp fetch is not available in this build.'));
+ return window.hxWispFetch(url,o);
+}
+function sniff(b){
+ if(b.length>=4&&b[0]===0x47&&b[1]===0x49&&b[2]===0x46&&b[3]===0x38)return 'image/gif';
+ if(b.length>=12&&b[0]===0x52&&b[1]===0x49&&b[2]===0x46&&b[3]===0x46&&b[8]===0x57&&b[9]===0x45&&b[10]===0x42&&b[11]===0x50)return 'image/webp';
+ if(b.length>=4&&b[0]===0x89&&b[1]===0x50&&b[2]===0x4E&&b[3]===0x47)return 'image/png';
+ if(b.length>=3&&b[0]===0xFF&&b[1]===0xD8&&b[2]===0xFF)return 'image/jpeg';
+ return '';
+}
+async function fetchImage(url){
+ const ctl=new AbortController(),timer=setTimeout(()=>ctl.abort(),35000);
+ try{
+  const r=await wisp(url,{signal:ctl.signal,headers:{accept:'image/gif,image/webp,image/*;q=0.8'}});
+  if(!r.ok)throw Error('HTTP '+r.status);
+  if(Number(r.headers.get('content-length')||0)>GIF_CAP)throw Error('GIF too large');
+  const reader=r.body.getReader(),chunks=[];let size=0;
+  for(;;){const {done,value}=await reader.read();if(done)break;size+=value.byteLength;if(size>GIF_CAP){try{reader.cancel();}catch(_){}throw Error('GIF too large');}chunks.push(value);}
+  const type=sniff(chunks.length?chunks[0]:new Uint8Array(0));
+  if(!type)throw Error('Not an image');
+  return new Blob(chunks,{type});
+ }finally{clearTimeout(timer);}
+}
+const gifCache=new Map(),gifWait=[];let gifBusy=0;
+function gifPump(){
+ while(gifBusy<3&&gifWait.length){
+  const job=gifWait.shift();gifBusy++;
+  fetchImage(job.url).then(job.ok,job.no).finally(()=>{gifBusy--;gifPump();});
+ }
+}
+function gifURL(url){
+ let e=gifCache.get(url);
+ if(e&&e.blobURL){e.refs++;return Promise.resolve(e);}
+ if(e&&e.p){e.refs++;return e.p;}
+ e={url,refs:1,blobURL:'',p:null};gifCache.set(url,e);
+ e.p=new Promise((ok,no)=>{gifWait.push({url,ok,no});gifPump();}).then(blob=>{e.blobURL=URL.createObjectURL(blob);return e;},err=>{if(gifCache.get(url)===e)gifCache.delete(url);throw err;});
+ return e.p;
+}
+function gifRelease(e){
+ if(!e||--e.refs>0)return;
+ if(gifCache.get(e.url)===e)gifCache.delete(e.url);
+ if(e.blobURL)setTimeout(()=>URL.revokeObjectURL(e.blobURL),2000);
+}
+const watcher=root=>'IntersectionObserver'in window?new IntersectionObserver((entries,obs)=>{
+ for(const en of entries)if(en.isIntersecting){obs.unobserve(en.target);en.target.__load&&en.target.__load();}
+},{root,rootMargin:'200px'}):null;
+const gifObserver=watcher(list);let thumbObserver=null;
+function gifBox(g,cls){
+ const box=document.createElement('div');box.className=cls;
+ const scale=Math.min(1,(cls==='hx-chat-gif'?260:150)/g.w);
+ box.style.width=Math.max(48,Math.round(g.w*scale))+'px';box.style.aspectRatio=g.w+' / '+g.h;
+ return box;
+}
+function gifAttach(box,g,obs){
+ const img=document.createElement('img');img.alt='GIF';img.decoding='async';img.draggable=false;
+ const note=document.createElement('span');note.className='hx-gif-note';note.textContent='Loading…';
+ box.append(img,note);
+ const load=()=>{
+  note.textContent='Loading…';box.classList.remove('failed');
+  gifURL(g.u).then(e=>{if(box.__dead){gifRelease(e);return;}box.__held=e;img.onload=()=>{box.classList.add('ready');};img.onerror=()=>{box.classList.add('failed');note.textContent='GIF unavailable';};img.src=e.blobURL;},()=>{box.classList.add('failed');note.textContent='GIF unavailable · tap to retry';});
+ };
+ box.__load=load;
+ box.__release=()=>{box.__dead=true;if(box.__held){gifRelease(box.__held);box.__held=null;}};
+ box.addEventListener('click',()=>{if(box.classList.contains('failed')&&note.textContent.includes('retry'))load();});
+ if(obs)obs.observe(box);else load();
+}
+function dropRow(row){
+ for(const b of row.querySelectorAll('.hx-chat-gif'))if(b.__release)b.__release();
+ row.remove();
+}
+
+/* ---------- messages ---------- */
 function normalizeMessage(m,historical=false){
  if(!m||m.type!=='message'||!valid(m.text,MAX)||!valid(m.sender,64)||typeof m.id!=='string'||!m.id||m.id.length>96)return null;
+ let gif=null;if(m.gif!=null){gif=normGif(m.gif);if(!gif)return null;}
+ if(!gif&&!m.text.trim())return null;
  const now=Date.now();let at=Number(m.at);
  if(!Number.isFinite(at)){if(historical)return null;at=now;}
  if(at<=now-TTL||at>now+15000)return null;
- return {type:'message',id:m.id,sender:m.sender,text:m.text,at:Math.min(at,now)};
+ const out={type:'message',id:m.id,sender:m.sender,text:m.text,at:Math.min(at,now)};if(gif)out.gif=gif;return out;
 }
 function snapshot(){
  const now=Date.now();for(const [id,m]of history)if(m.at+TTL<=now)history.delete(id);
- return [...history.values()].sort((a,b)=>a.at-b.at).slice(-100);
-}
-async function sendHistory(connection,type='history',records=snapshot()){
- const generation=epoch;
- for(let i=0;i<records.length;i+=5){
-  let waits=0;
-  while(connection.open&&connection.dataChannel&&connection.dataChannel.bufferedAmount>24576&&waits++<75)await new Promise(r=>setTimeout(r,40));
-  if(epoch!==generation||!connection.open||waits>=75)return;
-  if(!send(connection,{type,messages:records.slice(i,i+5)}))return;
-  if(i+5<records.length)await new Promise(r=>setTimeout(r,12));
- }
-}
-function mergeHistory(packet,budget){
- if(!packet||!Array.isArray(packet.messages)||packet.messages.length>5)return [];
- const accepted=[];
- for(const raw of packet.messages){
-  if(budget&&budget.remaining<=0)break;
-  if(budget)budget.remaining--;
-  const m=normalizeMessage(raw,true);if(!m||history.has(m.id)||seen.has(m.id))continue;
-  display(m,true);accepted.push(m);
- }
- return accepted;
+ return [...history.values()].sort((a,b)=>a.at-b.at).slice(-KEEP);
 }
 function expire(){
  const now=Date.now();snapshot();
- for(const row of [...list.querySelectorAll('.hx-chat-message')])if(Number(row.dataset.expires)<=now)row.remove();
+ for(const row of [...list.querySelectorAll('.hx-chat-message')])if(Number(row.dataset.expires)<=now)dropRow(row);
  syncBadges();empty();
- if(!list.querySelector('.hx-chat-message')&&!history.size&&expiryTimer){clearInterval(expiryTimer);expiryTimer=0;}
+ if(!list.querySelector('.hx-chat-message')&&!history.size&&!feed.length&&expiryTimer){clearInterval(expiryTimer);expiryTimer=0;}
 }
 function display(raw,historical=false){
  const m=normalizeMessage(raw,historical);if(!m||seen.has(m.id))return;
  seen.add(m.id);while(seen.size>256)seen.delete(seen.values().next().value);
- history.set(m.id,m);while(history.size>100){let oldest=null;for(const item of history.values())if(!oldest||item.at<oldest.at)oldest=item;history.delete(oldest.id);}
+ history.set(m.id,m);while(history.size>KEEP){let oldest=null;for(const item of history.values())if(!oldest||item.at<oldest.at)oldest=item;history.delete(oldest.id);}
  const placeholder=$('hx-chat-empty');if(placeholder)placeholder.remove();
  const scrolling=list.scrollHeight-list.scrollTop-list.clientHeight<100;
  const row=document.createElement('div');row.className='hx-chat-message';row.dataset.expires=String(m.at+TTL);row.dataset.sentAt=String(m.at);
- const who=document.createElement('div');who.className='hx-chat-who';who.textContent=m.sender;
- const text=document.createElement('div');text.className='hx-chat-text';text.textContent=m.text;row.append(who,text);
- const later=[...list.querySelectorAll('.hx-chat-message')].find(node=>Number(node.dataset.sentAt)>m.at);
+ const who=document.createElement('div');who.className='hx-chat-who';who.textContent=m.sender;row.append(who);
+ if(m.text.trim()){const text=document.createElement('div');text.className='hx-chat-text';text.textContent=m.text;row.append(text);}
+ if(m.gif){const box=gifBox(m.gif,'hx-chat-gif');row.append(box);gifAttach(box,m.gif,gifObserver);}
+ const rows=[...list.querySelectorAll('.hx-chat-message')];
+ const later=rows.find(node=>Number(node.dataset.sentAt)>m.at);
  if(later)list.insertBefore(row,later);else list.append(row);
- let rows=list.querySelectorAll('.hx-chat-message');while(rows.length>100){rows[0].remove();rows=list.querySelectorAll('.hx-chat-message');}
+ for(let i=0;i<rows.length+1-KEEP;i++)dropRow(list.querySelector('.hx-chat-message'));
  const visible=panel.classList.contains('open')&&!document.hidden;
  if(!historical&&m.sender!==label&&!visible)unread.set(m.id,m.at+TTL);
  if(visible)unread.clear();syncBadges();if(scrolling)list.scrollTop=list.scrollHeight;
  if(!expiryTimer)expiryTimer=setInterval(expire,1000);
 }
+/* backlog is drawn a few rows at a time so the page stays responsive */
+function enqueue(m){feed.push(m);if(!feedTimer)feedTimer=setTimeout(drain,0);}
+function drain(){
+ feedTimer=0;
+ for(let i=0;i<DRAW_BATCH&&feed.length;i++)display(feed.shift(),true);
+ if(feed.length)feedTimer=setTimeout(drain,DRAW_GAP);
+}
+function clearFeed(){feed=[];clearTimeout(feedTimer);feedTimer=0;}
+
+/* ---------- transport helpers ---------- */
 function send(c,m){try{if(!c.open)return false;if(c.dataChannel&&c.dataChannel.bufferedAmount>65536){c.close();return false;}c.send(m);return true;}catch(_){try{c.close();}catch(_){}return false;}}
+/* Sends items in small packets with a pause between them and never lets the channel buffer pile up. */
+async function pace(conn,items,packet,gen){
+ for(let i=0;i<items.length;i+=SYNC_CHUNK){
+  let waits=0;
+  while(conn.open&&conn.dataChannel&&conn.dataChannel.bufferedAmount>16384&&waits++<100)await sleep(50);
+  if(gen!==epoch||!conn.open||waits>=100)return false;
+  if(!send(conn,packet(items.slice(i,i+SYNC_CHUNK))))return false;
+  await sleep(SYNC_GAP);
+ }
+ return true;
+}
+const byIds=ids=>{const out=[];for(const id of ids){const m=history.get(id);if(m)out.push(m);}return out.sort((a,b)=>a.at-b.at);};
 function updateCount(){const n=clients.size+1;for(const [c,r]of clients)if(r.joined)send(c,{type:'count',n});if(role==='host')setStatus('Connected · '+n+' online · '+label,'online');controls();}
-function relay(sender,text){const m={type:'message',id:nonce+'-'+(++sequence),sender,text,at:Date.now()};display(m);for(const[c,r]of clients)if(r.joined)send(c,m);}
-function reset(){epoch++;clearTimeout(retryTimer);const p=active;active=null;master=null;role='';welcomed=false;for(const[c,r]of clients){clearTimeout(r.timer);try{c.close();}catch(_){}}clients.clear();if(p)try{p.destroy();}catch(_){}controls();}
+function relay(sender,text,gif){const m={type:'message',id:nonce+'-'+(++sequence),sender,text,at:Date.now()};if(gif)m.gif=gif;display(m);for(const[c,r]of clients)if(r.joined)send(c,m);}
+function reset(){epoch++;clearTimeout(retryTimer);const p=active;active=null;master=null;role='';welcomed=false;sync=null;clearFeed();for(const[c,r]of clients){clearTimeout(r.timer);try{c.close();}catch(_){}}clients.clear();plans.clear();pulling.clear();if(p)try{p.destroy();}catch(_){}controls();}
 function fail(reason){if(!wanted)return;reset();attempts++;if(attempts>6){wanted=false;setStatus(reason+' Press Retry to reconnect.','error');controls();return;}setStatus(reason+' Reconnecting…');retryTimer=setTimeout(()=>{if(wanted)elect();},Math.min(12000,1000*Math.pow(1.5,attempts))+Math.random()*900);}
 function peerEvents(p,g){p.on('disconnected',()=>{if(g===epoch&&active===p&&wanted)fail('Signaling disconnected.');});p.on('close',()=>{if(g===epoch&&active===p&&wanted)fail('Connection closed.');});}
+
+/* ---------- host: sharing the backlog ---------- */
+/* The backlog a newcomer lacks is split into stripes. The host and up to SYNC_DONORS-1 other peers each send one stripe (through the host), so no single peer carries it all. */
+function startSync(c,r,have){
+ const got=new Set(have),missing=snapshot().filter(m=>!got.has(m.id));
+ if(!missing.length)return;
+ const sid=uid(),donors=[...clients].filter(([o,rec])=>o!==c&&rec.joined&&o.open).map(([o])=>o).sort(()=>Math.random()-.5).slice(0,SYNC_DONORS-1);
+ const senders=['host',...donors],stripes=new Map(senders.map(s=>[s,new Set()]));
+ missing.forEach((m,i)=>stripes.get(senders[i%senders.length]).add(m.id));
+ const plan={sid,target:c,stripes,served:false,timer:setTimeout(()=>plans.delete(sid),40000)};plans.set(sid,plan);r.plan=plan;
+ if(!send(c,{type:'sync-start',sid,ids:missing.map(m=>m.id)}))return;
+ const gen=epoch,mine=stripes.get('host');
+ for(const [s,ids] of stripes){
+  if(s==='host'||!ids.size)continue;
+  if(!send(s,{type:'sync-give',sid,ids:[...ids]})){for(const id of ids)mine.add(id);ids.clear();}
+ }
+ if(mine.size)pace(c,byIds([...mine]),p=>({type:'history',sid,messages:p}),gen);
+}
+/* A client that holds messages the host does not (after the old host left) hands them over, paced, and nothing is re-broadcast. */
+function startPull(c,r,have){
+ const want=have.filter(id=>!history.has(id)&&!seen.has(id)&&!pulling.has(id)).slice(0,KEEP);
+ if(!want.length)return;
+ r.pullIds=new Set(want);for(const id of want)pulling.add(id);
+ send(c,{type:'pull',ids:want});
+}
 function accept(c,g){
  if(g!==epoch||role!=='host'){try{c.close();}catch(_){}return;}
  if(clients.size>=CAP-1){c.on('open',()=>{send(c,{type:'reject'});setTimeout(()=>c.close(),200);});return;}
- const r={joined:false,label:'',historyBudget:{remaining:100},bucket:bucket(),timer:setTimeout(()=>{if(!r.joined)c.close();},12000)};clients.set(c,r);
+ const r={joined:false,label:'',bucket:bucket(),plan:null,pullIds:new Set(),timer:setTimeout(()=>{if(!r.joined)c.close();},12000)};clients.set(c,r);
  c.on('data',m=>{if(g!==epoch||!wanted||!m||typeof m!=='object')return;
-  if(m.type==='hello'&&!r.joined){if(!valid(m.name,24)||!m.name.trim()){c.close();return;}clearTimeout(r.timer);r.joined=true;r.label=clean(m.name)+' · '+String(c.peer).slice(-4);send(c,{type:'welcome',label:r.label,n:clients.size+1});sendHistory(c);updateCount();return;}
-  if(m.type==='history-offer'&&r.joined){const added=mergeHistory(m,r.historyBudget);if(added.length)for(const [other,record]of clients)if(other!==c&&record.joined)sendHistory(other,'history',added);return;}
-  if(m.type==='say'&&r.joined&&valid(m.text,MAX)&&m.text.trim()){if(allowed(r.bucket))relay(r.label,m.text.trim());else send(c,{type:'notice',text:'Please wait a moment before sending again.'});}
+  if(m.type==='hello'&&!r.joined){
+   if(!valid(m.name,24)||!m.name.trim()){c.close();return;}
+   const have=idList(m.have,KEEP)?m.have:[];
+   clearTimeout(r.timer);r.joined=true;r.label=clean(m.name)+' · '+String(c.peer).slice(-4);
+   send(c,{type:'welcome',label:r.label,n:clients.size+1});startSync(c,r,have);startPull(c,r,have);updateCount();return;
+  }
+  if(!r.joined)return;
+  if(m.type==='sync-chunk'){
+   const plan=plans.get(m.sid),mine=plan&&plan.stripes.get(c);if(!mine||!Array.isArray(m.messages)||m.messages.length>SYNC_CHUNK)return;
+   const out=[];for(const raw of m.messages){const rec=normalizeMessage(raw,true);if(rec&&mine.delete(rec.id))out.push(rec);}
+   if(out.length)send(plan.target,{type:'history',sid:plan.sid,messages:out});return;
+  }
+  if(m.type==='sync-miss'){
+   const plan=plans.get(m.sid);if(!plan||plan.target!==c||plan.served||!idList(m.ids,KEEP))return;
+   plan.served=true;pace(c,byIds(m.ids),p=>({type:'history',sid:plan.sid,messages:p}),g);return;
+  }
+  if(m.type==='offer'){
+   if(!r.pullIds.size||!Array.isArray(m.messages)||m.messages.length>SYNC_CHUNK)return;
+   for(const raw of m.messages){const rec=normalizeMessage(raw,true);if(rec&&r.pullIds.delete(rec.id)){pulling.delete(rec.id);display(rec,true);}}
+   return;
+  }
+  if(m.type==='say'){
+   const gif=m.gif==null?null:normGif(m.gif);
+   if(m.gif!=null&&!gif)return;
+   if(valid(m.text,MAX)&&(m.text.trim()||gif)){if(allowed(r.bucket))relay(r.label,m.text.trim(),gif);else send(c,{type:'notice',text:'Please wait a moment before sending again.'});}
+  }
  });
- const remove=()=>{clearTimeout(r.timer);if(clients.delete(c)&&epoch===g)updateCount();};c.on('close',remove);c.on('error',()=>{try{c.close();}catch(_){}remove();});
+ const remove=()=>{clearTimeout(r.timer);if(r.plan){clearTimeout(r.plan.timer);plans.delete(r.plan.sid);}for(const id of r.pullIds)pulling.delete(id);if(clients.delete(c)&&epoch===g)updateCount();};c.on('close',remove);c.on('error',()=>{try{c.close();}catch(_){}remove();});
+}
+
+/* ---------- client ---------- */
+function watchSync(c,g){
+ const s=sync;if(!s)return;
+ const tick=()=>{
+  if(g!==epoch||sync!==s||!s.want.size){if(sync===s&&!s.want.size)sync=null;return;}
+  if(!s.asked&&Date.now()-s.at>SYNC_STALL){s.asked=true;s.at=Date.now();send(c,{type:'sync-miss',sid:s.sid,ids:[...s.want]});}
+  else if(s.asked&&Date.now()-s.at>SYNC_STALL*3){sync=null;return;}
+  setTimeout(tick,1000);
+ };
+ setTimeout(tick,1000);
 }
 function client(){
- const g=epoch;role='client';historyBudget={remaining:100};let p;try{p=new PeerClass(undefined,OPTIONS);}catch(_){fail('Unable to start PeerJS.');return;}active=p;peerEvents(p,g);
+ const g=epoch;role='client';let p;try{p=new PeerClass(undefined,OPTIONS);}catch(_){fail('Unable to start PeerJS.');return;}active=p;peerEvents(p,g);
  let timer=setTimeout(()=>{if(g===epoch)fail('Signaling timed out.');},18000);
  p.on('open',()=>{clearTimeout(timer);if(g!==epoch||!wanted)return;setStatus('Connecting to the room…');let c;try{c=p.connect(ROOM,{reliable:true,serialization:'json'});}catch(_){fail('Could not connect to the room.');return;}master=c;
  timer=setTimeout(()=>{if(g===epoch&&!welcomed)fail('Peer connection blocked or host unavailable.');},18000);
- c.on('open',()=>{if(g===epoch)send(c,{type:'hello',name:nick});});
+ c.on('open',()=>{if(g===epoch)send(c,{type:'hello',name:nick,have:snapshot().map(m=>m.id)});});
  c.on('data',m=>{if(g!==epoch||!wanted||!m||typeof m!=='object')return;
-  if(m.type==='welcome'&&valid(m.label,64)){clearTimeout(timer);welcomed=true;attempts=0;label=m.label;sendHistory(c,'history-offer');setStatus('Connected · '+(Number(m.n)||1)+' online · '+label,'online');controls();if(panel.classList.contains('open'))field.focus();return;}
+  if(m.type==='welcome'&&valid(m.label,64)){clearTimeout(timer);welcomed=true;attempts=0;label=m.label;setStatus('Connected · '+(Number(m.n)||1)+' online · '+label,'online');controls();if(panel.classList.contains('open'))field.focus();return;}
   if(m.type==='reject'){clearTimeout(timer);reset();wanted=false;setStatus('Room is full or connection was rejected.','error');controls();return;}if(!welcomed)return;
-  if(m.type==='history'){mergeHistory(m,historyBudget);return;}
+  if(m.type==='sync-start'){
+   if(typeof m.sid!=='string'||m.sid.length>64||!idList(m.ids,KEEP)||!m.ids.length)return;
+   sync={sid:m.sid,want:new Set(m.ids.filter(id=>!history.has(id)&&!seen.has(id))),at:Date.now(),asked:false};watchSync(c,g);return;
+  }
+  if(m.type==='history'){
+   if(!sync||m.sid!==sync.sid||!Array.isArray(m.messages)||m.messages.length>SYNC_CHUNK)return;
+   for(const raw of m.messages){const rec=normalizeMessage(raw,true);if(rec&&sync.want.delete(rec.id)){sync.at=Date.now();enqueue(rec);}}
+   return;
+  }
+  if(m.type==='sync-give'||m.type==='pull'){
+   if(!idList(m.ids,KEEP)||(m.type==='sync-give'&&(typeof m.sid!=='string'||m.sid.length>64)))return;
+   const recs=byIds(m.ids),sid=m.sid;
+   pace(c,recs,pk=>m.type==='pull'?{type:'offer',messages:pk}:{type:'sync-chunk',sid,messages:pk},g);return;
+  }
   if(m.type==='message'){const now=Date.now();renderBudget.tokens=Math.min(40,renderBudget.tokens+(now-renderBudget.at)/50);renderBudget.at=now;if(renderBudget.tokens>=1){renderBudget.tokens--;display(m);}}
   else if(m.type==='count'&&Number.isInteger(m.n)&&m.n>=1&&m.n<=CAP)setStatus('Connected · '+m.n+' online · '+label,'online');else if(m.type==='notice'&&valid(m.text,200))setStatus(m.text,'online');
  });
@@ -15373,10 +15605,89 @@ function loadPeer(){
  libPromise=new Promise((resolve,reject)=>{let done=false;const old=window.Peer,script=document.createElement('script');
  const finish=error=>{if(done)return;done=true;clearTimeout(timer);if(error){script.remove();reject(error);return;}PeerClass=window.Peer;if(old===undefined)try{delete window.Peer;}catch(_){}else window.Peer=old;if(typeof PeerClass!=='function'){reject(Error('PeerJS did not initialize.'));return;}resolve();};
  const timer=setTimeout(()=>finish(Error('Chat library timed out. Check access to jsDelivr, then Retry.')),20000);
- script.src='https://cdn.jsdelivr.net/npm/peerjs@1.5.5/dist/peerjs.min.js';script.crossOrigin='anonymous';script.onload=()=>finish();script.onerror=()=>finish(Error('Chat library could not load. Check access to jsDelivr, then Retry.'));document.head.append(script);
+ script.src=window.HX_PEER_SRC||'https://cdn.jsdelivr.net/npm/peerjs@1.5.5/dist/peerjs.min.js';script.crossOrigin='anonymous';script.onload=()=>finish();script.onerror=()=>finish(Error('Chat library could not load. Check access to jsDelivr, then Retry.'));document.head.append(script);
  }).catch(e=>{libPromise=null;throw e;});return libPromise;
 }
 async function connect(){const token=++joinToken;wanted=true;attempts=0;ownBucket=bucket();setStatus('Loading chat…');controls();try{await loadPeer();if(token!==joinToken||!wanted)return;elect();}catch(e){if(token!==joinToken)return;wanted=false;setStatus(e.message,'error');controls();}}
+
+/* ---------- GIF picker (Klipy via Wisp) ---------- */
+const picker=$('hx-chat-gifs'),gifQ=$('hx-gif-q'),gifGrid=$('hx-gif-grid'),gifNote=$('hx-gif-status'),keyBox=$('hx-gif-key'),keyIn=$('hx-gif-keyin');
+const store2={get(k){try{return localStorage.getItem(k)||'';}catch(_){return '';}},set(k,v){try{localStorage.setItem(k,v);}catch(_){}}};
+const apiKey=()=>(GIPHY_KEY||store2.get('hx.giphy.key')||window.HX_GIPHY_KEY||'').trim();
+thumbObserver=watcher($('hx-gif-grid'));
+let gifState={q:'',page:0,next:false,busy:false,token:0,ctl:null,debounce:0};
+const GIF_PAGE=24;
+function pickFile(item,order){
+ const f=item&&item.images;if(!f||typeof f!=='object')return null;
+ for(const k of order){const x=f[k];if(x&&typeof x==='object'&&typeof x.url==='string')return {u:x.url,w:Number(x.width)||200,h:Number(x.height)||150};}
+ return null;
+}
+async function giphy(q,page,signal){
+ const key=apiKey();if(!key){const e=Error('Add a GIPHY API key to use GIFs.');e.code='nokey';throw e;}
+ const offset=(page-1)*GIF_PAGE,params=new URLSearchParams({api_key:key,limit:String(GIF_PAGE),offset:String(offset),rating:'pg',bundle:'messaging_non_clips'});if(q){params.set('q',q);params.set('lang','en');}
+ const r=await wisp(GIPHY_API+(q?'search':'trending')+'?'+params,{signal,headers:{accept:'application/json'}});
+ if(r.status===401||r.status===403){const e=Error('GIPHY rejected the API key.');e.code='nokey';throw e;}
+ if(r.status===429)throw Error('GIPHY rate limit reached. Try again in a bit.');
+ if(!r.ok)throw Error('GIPHY answered '+r.status+'.');
+ let j;try{j=await r.json();}catch(_){throw Error('GIPHY sent an unreadable answer.');}
+ const items=j&&Array.isArray(j.data)?j.data:[],out=[];
+ for(const it of items){
+  const prev=normGif(pickFile(it,['fixed_width_small','fixed_width_downsampled','fixed_width'])),msg=normGif(pickFile(it,['fixed_width','fixed_width_downsampled','downsized','fixed_width_small']));
+  if(prev&&msg)out.push({id:String(it.id||msg.u),title:String(it.title||'GIF').slice(0,80),prev,msg});
+ }
+ const pg=j&&j.pagination,total=pg&&Number(pg.total_count),got=pg&&Number(pg.count);
+ return {items:out,next:items.length>0&&(Number.isFinite(total)&&Number.isFinite(got)?offset+got<total:items.length>=GIF_PAGE)};
+}
+function gifStatus(text,bad){gifNote.textContent=text;gifNote.classList.toggle('bad',!!bad);gifNote.hidden=!text;}
+function gifClear(){for(const b of gifGrid.querySelectorAll('.hx-gif-thumb'))if(b.__release)b.__release();gifGrid.replaceChildren();gifGrid.scrollTop=0;}
+async function gifLoad(reset){
+ const s=gifState;if(reset){s.token++;if(s.ctl)s.ctl.abort();s.busy=false;s.page=0;s.next=true;gifClear();}
+ if(s.busy||!s.next)return;
+ s.busy=true;const token=s.token;s.ctl=new AbortController();const timer=setTimeout(()=>s.ctl.abort(),30000);
+ keyBox.hidden=true;gifStatus('Loading GIFs…');
+ try{
+  const res=await giphy(s.q,s.page+1,s.ctl.signal);
+  if(token!==s.token)return;
+  s.page++;s.next=res.next;
+  for(const it of res.items){
+   const b=document.createElement('button');b.type='button';b.className='hx-gif-thumb';b.title=it.title;b.setAttribute('aria-label','Send GIF: '+it.title);
+   const box=gifBox(it.prev,'hx-gif-box');box.style.width='100%';b.append(box);gifAttach(box,it.prev,thumbObserver);b.__release=()=>box.__release&&box.__release();
+   b.addEventListener('click',()=>sendGif(it.msg));gifGrid.append(b);
+  }
+  gifStatus(gifGrid.children.length?'':(s.q?'No GIFs found for “'+s.q+'”.':'No GIFs right now.'));
+ }catch(e){
+  if(token!==s.token)return;
+  if(e.code==='nokey'){keyBox.hidden=false;gifStatus(e.message,true);}
+  else gifStatus(e.name==='AbortError'?'GIPHY took too long. Try again.':String(e.message||'Could not load GIFs.'),true);
+  s.next=false;if(!e.code&&!gifGrid.children.length){const retry=document.createElement('button');retry.type='button';retry.className='btn sm';retry.textContent='Try again';retry.addEventListener('click',()=>{s.next=true;gifLoad(true);});gifNote.append(' ',retry);}
+ }finally{clearTimeout(timer);if(token===s.token)s.busy=false;}
+}
+function sendGif(gif){
+ if(!ready()){setStatus('Still connecting. Wait for Connected before sending.');return;}
+ const g=normGif(gif);if(!g){gifStatus('That GIF cannot be shared here.',true);return;}
+ if(!allowed(ownBucket)){setStatus('Please wait a moment before sending again.','online');return;}
+ if(role==='host')relay(label,'',g);else if(!send(master,{type:'say',text:'',gif:g})){fail('Could not send the message.');return;}
+ closePicker();field.focus();
+}
+function openPicker(){
+ if(!ready())return;
+ picker.hidden=false;$('hx-chat-gif').setAttribute('aria-expanded','true');
+ if(!gifGrid.children.length&&!gifState.busy){gifState.q=gifQ.value.trim();gifLoad(true);}
+ gifQ.focus();
+}
+function closePicker(){
+ if(picker.hidden)return;
+ picker.hidden=true;$('hx-chat-gif').setAttribute('aria-expanded','false');
+}
+$('hx-chat-gif').addEventListener('click',()=>{if(picker.hidden)openPicker();else{closePicker();field.focus();}});
+$('hx-gif-x').addEventListener('click',()=>{closePicker();$('hx-chat-gif').focus();});
+gifQ.addEventListener('input',()=>{clearTimeout(gifState.debounce);gifState.debounce=setTimeout(()=>{gifState.q=gifQ.value.trim();gifLoad(true);},450);});
+gifQ.addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();clearTimeout(gifState.debounce);gifState.q=gifQ.value.trim();gifLoad(true);}else if(e.key==='Escape'){e.preventDefault();e.stopPropagation();closePicker();$('hx-chat-gif').focus();}});
+gifGrid.addEventListener('scroll',()=>{if(gifGrid.scrollHeight-gifGrid.scrollTop-gifGrid.clientHeight<160)gifLoad(false);});
+$('hx-gif-keysave').addEventListener('click',()=>{const v=keyIn.value.trim();if(!/^[A-Za-z0-9_-]{8,200}$/.test(v)){gifStatus('That does not look like a GIPHY API key.',true);return;}store2.set('hx.giphy.key',v);keyIn.value='';gifState.next=true;gifLoad(true);});
+keyIn.addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();$('hx-gif-keysave').click();}});
+
+/* ---------- panel ---------- */
 function setNameGate(show){
  dialog.hidden=!show;
  for(const child of panel.children)if(child!==dialog)child.inert=show;
@@ -15389,6 +15700,7 @@ function open(button){
  markRead();if(!nick)openName();else if(ready())field.focus();
 }
 function close(){
+ closePicker();
  panel.classList.remove('open');panel.inert=true;panel.setAttribute('aria-hidden','true');setNameGate(false);
  for(const b of document.querySelectorAll('[data-hx-chat]'))b.setAttribute('aria-expanded','false');
  if(opener)opener.focus();
@@ -15398,12 +15710,12 @@ $('hx-chat-close').addEventListener('click',close);
 $('hx-chat-name-cancel').addEventListener('click',close);
 dialog.addEventListener('cancel',e=>{e.preventDefault();close();});
 $('hx-chat-name-form').addEventListener('submit',e=>{e.preventDefault();const raw=$('hx-chat-name').value,value=clean(raw);if(!value||Array.from(raw.trim()).length>24){$('hx-chat-name-error').textContent='Use 1–24 characters for your name.';$('hx-chat-name').focus();return;}nick=value;setNameGate(false);connect();});
-$('hx-chat-leave').addEventListener('click',()=>{joinToken++;wanted=false;reset();nick='';label='';seen.clear();history.clear();unread.clear();syncBadges();list.replaceChildren();if(expiryTimer){clearInterval(expiryTimer);expiryTimer=0;}empty();field.value='';$('hx-chat-counter').textContent='0 / 250';setStatus('Choose a name to join.','offline');controls();if(panel.classList.contains('open'))openName();});
+$('hx-chat-leave').addEventListener('click',()=>{joinToken++;wanted=false;reset();closePicker();nick='';label='';seen.clear();history.clear();unread.clear();syncBadges();for(const row of [...list.querySelectorAll('.hx-chat-message')])dropRow(row);list.replaceChildren();if(expiryTimer){clearInterval(expiryTimer);expiryTimer=0;}empty();field.value='';$('hx-chat-counter').textContent='0 / 250';setStatus('Choose a name to join.','offline');controls();if(panel.classList.contains('open'))openName();});
 $('hx-chat-retry').addEventListener('click',()=>{if(nick)connect();else openName();});
 $('hx-chat-compose').addEventListener('submit',e=>{e.preventDefault();const text=field.value.trim();if(!ready()){setStatus('Still connecting. Wait for Connected before sending.');return;}if(!text||!valid(text,MAX))return;if(!allowed(ownBucket)){setStatus('Please wait a moment before sending again.','online');return;}if(role==='host')relay(label,text);else if(!send(master,{type:'say',text})){fail('Could not send the message.');return;}field.value='';$('hx-chat-counter').textContent='0 / 250';controls();field.focus();});
 field.addEventListener('input',()=>{const n=Array.from(field.value).length;$('hx-chat-counter').textContent=n+' / 250';$('hx-chat-counter').style.color=n>MAX?'var(--bad)':'';controls();});
 field.addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey&&!e.isComposing){e.preventDefault();$('hx-chat-compose').requestSubmit();}});
-document.addEventListener('keydown',e=>{if(e.key==='Escape'&&dialog.hidden&&panel.classList.contains('open'))close();});
+document.addEventListener('keydown',e=>{if(e.key==='Escape'&&dialog.hidden&&panel.classList.contains('open')){if(!picker.hidden){closePicker();return;}close();}});
 window.addEventListener('pagehide',()=>{joinToken++;wanted=false;reset();});controls();
 
 // The name gate blocks only this drawer, not the browser behind it.
@@ -15418,6 +15730,7 @@ dialog.addEventListener('keydown',e=>{
  }
 });
 document.addEventListener('visibilitychange',()=>{if(!document.hidden&&panel.classList.contains('open'))markRead();});
+if(window.HX_CHAT_TEST)window.__hxChatTest={relay,history,get sync(){return sync;},get role(){return role;},get feed(){return feed.length;},normGif,normalizeMessage,gifCache};
 syncBadges();
 })();
 </script>

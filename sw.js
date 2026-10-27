@@ -15,7 +15,7 @@ function resourceName(request) {
 }
 function reportFailure(stage,error,request) {
   const message=String(error&&error.message||error||"Unknown error").slice(0,500);
-  console.error("[Helix Scramjet SW] "+stage+": "+message+" — "+resourceName(request));
+  console.error("[vibecoded proxy Scramjet SW] "+stage+": "+message+" — "+resourceName(request));
 }
 
 /* Scan only actual attribute names. Text inside quoted values is left alone. */
@@ -164,7 +164,7 @@ async function handleRouted(event) {
   }catch(error){
     reportFailure(stage,error,event.request);
     // Fail closed: never retry a routed request using a direct fetch.
-    const response=new Response('Helix Scramjet request failed during '+stage+'. See the service-worker console for details.',{
+    const response=new Response('vibecoded proxy Scramjet request failed during '+stage+'. See the service-worker console for details.',{
       status:error instanceof RangeError?413:502,headers:{'content-type':'text/plain; charset=utf-8','cache-control':'no-store'}
     });
     try{return await HzCors.wrap(response,event.request);}catch(_){return response;}
