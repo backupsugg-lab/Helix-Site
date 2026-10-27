@@ -9587,10 +9587,13 @@ function openPopup(owner, openerWin, url, features, linkOpener) {
 }
 /* entry point for the patched window.open inside Scramjet (sj/scramjet/scramjet.js): the page's window.open lands here
    with the real address. Returns {w: popupWindow} when the popup was opened inside the browser, nothing to fall back. */
+const isPopupFeat = f => /(^|,)\s*(width|height|popup)\b/i.test(String(f || ""));
+const tabStub = u => ({ closed: false, close() {}, focus() {}, blur() {}, postMessage() {}, location: { href: u }, document: { write() {}, close() {} } });
 window.__hzPopup = function (openerWin, abs, feat, name) {
   try {
     const owner = popOwner(openerWin); if (!owner) return;
     if (name && !/^_blank$/i.test(name)) { let ex = null; try { ex = openerWin.frames[name]; } catch (e) {} if (ex) return; }
+    if (!isPopupFeat(feat)) { newTab(abs, owner.tab); return { w: /\bno(opener|referrer)\b/i.test(feat || "") ? null : tabStub(abs) }; }
     if (POPS.filter(q => q.tab === owner.tab).length >= 3) return { w: null };
     const link = !/\bno(opener|referrer)\b/i.test(feat || "");
     const p = openPopup(owner, openerWin, abs, feat, link);
@@ -9616,6 +9619,7 @@ function hookPopups(t, frame) {
               const base = realUrlOf(w, frame); if (!base) return pass();
               let abs = new URL(raw, base).href; if (!/^https?:/i.test(abs)) return pass();
               if (abs.startsWith(sjPrefix())) { try { abs = $scramjet.unrewriteUrl(abs, frame.context); } catch (e2) { return pass(); } if (!/^https?:/i.test(abs)) return pass(); }
+              if (!isPopupFeat(feat)) { newTab(abs, owner.tab); return /\bno(opener|referrer)\b/i.test(feat) ? null : tabStub(abs); }
               if (POPS.filter(q => q.tab === owner.tab).length >= 3) return null;
               const link = !/\bno(opener|referrer)\b/i.test(feat);
               const p = openPopup(owner, w, abs, feat, link);
@@ -9627,16 +9631,46 @@ function hookPopups(t, frame) {
         if (w.open !== proxy) { try { Object.defineProperty(w, "open", { value: proxy, configurable: true, writable: true, enumerable: true }); } catch (e) {} }
       }
       const doc = w.document;
-      if (doc && doc.addEventListener) doc.addEventListener("click", e => {
-        try {
-          if (e.defaultPrevented || e.button !== 0) return;
-          const a = e.target && e.target.closest && e.target.closest("a[target]");
-          if (!a || !/^_blank$/i.test(a.getAttribute("target") || "")) return;
-          const href = a.href; if (!/^https?:/i.test(href)) return;
-          const owner = popOwner(w); if (!owner) return;
-          e.preventDefault(); newTab(href, owner.tab);
-        } catch (er) {}
-      }, true);
+      if (doc && doc.addEventListener) {
+        const realHref = h => { try { h = String(h); if (h.startsWith(sjPrefix())) h = $scramjet.unrewriteUrl(h, frame.context); return /^https?:/i.test(h) ? h : ""; } catch (e) { return ""; } };
+        const named = n => { try { return !!w.frames[n]; } catch (e) { return false; } };
+        const wantsTab = n => { n = String(n || "").trim(); if (!n || /^(_self|_top|_parent|_unfencedTop)$/i.test(n)) return false; return /^_blank$/i.test(n) || !named(n); };
+        const baseTarget = () => { try { const b = doc.querySelector("base[target]"); return b ? b.getAttribute("target") : ""; } catch (e) { return ""; } };
+        const linkOf = e => { try { for (const n of (e.composedPath ? e.composedPath() : [])) if (n && n.nodeType === 1 && /^(a|area)$/i.test(n.localName) && n.hasAttribute("href")) return n; } catch (e2) {} return e.target && e.target.closest ? e.target.closest("a[href],area[href]") : null; };
+        /* target=_blank, <base target>, named targets, ctrl/shift/middle click: always a tab of this browser, never a window of the real one */
+        const onLink = e => {
+          try {
+            if (e.defaultPrevented) return;
+            const mid = e.type === "auxclick" && e.button === 1;
+            if (!mid && !(e.type === "click" && e.button === 0)) return;
+            const a = linkOf(e); if (!a) return;
+            const mod = mid || e.ctrlKey || e.metaKey || e.shiftKey;
+            if (!mod && (a.hasAttribute("download") || !wantsTab(a.hasAttribute("target") ? a.getAttribute("target") : baseTarget()))) return;
+            const href = realHref(a.href); if (!href) return;
+            const owner = popOwner(w); if (!owner) return;
+            e.preventDefault(); e.stopPropagation(); newTab(href, owner.tab);
+          } catch (er) {}
+        };
+        doc.addEventListener("click", onLink, true);
+        doc.addEventListener("auxclick", onLink, true);
+        doc.addEventListener("submit", e => {
+          try {
+            if (e.defaultPrevented) return;
+            const f = e.target; if (!f || f.localName !== "form") return;
+            const sub = e.submitter, tgt = sub && sub.hasAttribute("formtarget") ? sub.getAttribute("formtarget") : (f.hasAttribute("target") ? f.getAttribute("target") : baseTarget());
+            if (!wantsTab(tgt)) return;
+            const owner = popOwner(w), method = String((sub && sub.getAttribute("formmethod")) || f.getAttribute("method") || "get").toLowerCase();
+            const act = realHref(sub && sub.hasAttribute("formaction") ? sub.formAction : f.action);
+            if (owner && act && method === "get" && f.enctype !== "multipart/form-data") {
+              const u = new URL(act); const fd = new FormData(f, sub || undefined);
+              for (const [k, v] of fd) if (typeof v === "string") u.searchParams.set(k, v);
+              e.preventDefault(); newTab(u.href, owner.tab); return;
+            }
+            /* a POST that wants a new window: send it in this tab instead of letting the real browser open a window */
+            if (sub && sub.hasAttribute("formtarget")) sub.setAttribute("formtarget", "_self"); else f.setAttribute("target", "_self");
+          } catch (er) {}
+        }, true);
+      }
     } catch (e) {}
   });
 }
@@ -14799,7 +14833,7 @@ function rec(t) {
 }
 
 /* ---------- downloads ---------- */
-const BIN = /^application\/(octet-stream|zip|x-zip.*|gzip|x-gzip|x-tar|x-7z.*|x-rar.*|vnd\.rar|x-msdownload|x-msi|vnd\.android\.package-archive|x-apple-diskimage|x-iso9660-image|x-bzip2|x-xz|java-archive|x-debian-package|x-rpm)$/i;
+const BIN = /^(application\/(octet-stream|zip|x-zip.*|gzip|x-gzip|x-tar|x-gtar|x-tgz|x-7z.*|x-rar.*|vnd\.rar|x-msdownload|x-msdos-program|x-dosexec|vnd\.microsoft\.portable-executable|x-msi|vnd\.android\.package-archive|x-apple-diskimage|x-iso9660-image|x-bzip2|x-xz|x-lzma|zstd|x-zstd|x-compressed|x-compress|vnd\.ms-cab-compressed|java-archive|x-debian-package|vnd\.debian\.binary-package|x-redhat-package-manager|x-rpm|x-bittorrent|x-sh|x-shellscript|force-download|download|x-download|x-unknown|x-chrome-extension)|binary\/octet-stream)$/i;
 function dlName(cd, url, ct) {
   let n = "", m = /filename\*\s*=\s*(?:UTF-8'')?([^;]+)/i.exec(cd) || /filename\s*=\s*"?([^";]+)"?/i.exec(cd);
   if (m) try { n = decodeURIComponent(m[1].trim().replace(/^"|"$/g, "")); } catch (e) { n = m[1]; }
@@ -14832,11 +14866,16 @@ async function pump(d, body) {
 /* called from the Scramjet response hook: top-level navigations that are files become managed downloads */
 function dlIntercept(t, ctx, props) {
   const r = props.response;
-  if (!r || !r.body || r.status < 200 || r.status > 299 || r.status === 204 || !ctx.request || ctx.request.mode !== "navigate" || !on("dlm")) return false;
+  const dest = String((ctx.request && (ctx.request.destination || ctx.request.rawDestination)) || (ctx.parsed && ctx.parsed.destination) || "");
+  const nav = !!ctx.request && (ctx.request.mode === "navigate" || /^(document|iframe|frame|embed|object)$/i.test(dest));
+  if (!r || !r.body || r.status < 200 || r.status > 299 || r.status === 204 || !nav || !on("dlm")) return false;
   const g = k => { try { return r.headers.get(k) || ""; } catch (e) { return ""; } }, cd = g("content-disposition"), ct = g("content-type").split(";")[0].trim();
   if (!/^\s*attachment/i.test(cd) && !BIN.test(ct) && GE.classify(ct, ctx.parsed.url.href, null) !== "binary") return false;
   const url = ctx.parsed.url.href, d = dlAdd(url, dlName(cd, url, ct), ct, +g("content-length") || 0);
   pump(d, r.body); r.status = 204; r.statusText = "No Content"; r.body = null;
+  /* nothing may be left that tells the real browser to download or render this response a second time */
+  try { for (const k of ["content-disposition", "content-type", "content-length", "content-encoding", "content-range", "accept-ranges", "etag", "last-modified"]) { if (r.headers && typeof r.headers.delete === "function") r.headers.delete(k); else if (r.headers && typeof r.headers === "object") delete r.headers[k]; } } catch (e) {}
+  log("info", "downloads", "caught a download: " + d.name + " (" + (ct || "unknown type") + ")");
   if (t.fresh) { t.fresh = false; if (t.prev) { t.url = t.prev.url; t.title = t.prev.title; } else { t.url = ""; t.title = "New Tab"; t.sj = false; } setTimeout(() => select(t), 0); }
   setTimeout(() => { setStatus(""); render(); }, 0); return true;
 }
@@ -15224,7 +15263,7 @@ function saveLocal(d){if(!d||!d.blob)throw Error('File bytes are not retained. R
 function offer(d){queued.set(d.id,d);parent.postMessage({__directDl:1,kind:'offer',id:d.id,nonce},'*');}
 dlSave=function(d){try{if(EMBED){offer(d);return;}saveLocal(d);}catch(e){if(d)d.err=String(e.message||e);log('error','downloads',String(e.message||e));feedback('Save could not be requested. Open Downloads to retry.');changed();}};
 const oldAdd=dlAdd;dlAdd=function(url,name,type,total){const d=oldAdd(url,nameOf(name),type,total);d.startedAt=Date.now();d.speed=0;changed();return d;};
-pump=async function(d,body){let reader=null;const chunks=[];try{if(d.total>LIMIT)throw Error('File exceeds the 128 MiB in-memory limit.');reader=body&&body.getReader?body.getReader():new Response(body).body.getReader();d.cancel=()=>{d.state='cancelled';reader.cancel().catch(()=>{});changed();};for(;;){const r=await reader.read();if(r.done||d.state==='cancelled')break;if(used()+r.value.byteLength>LIMIT)throw Error('128 MiB download buffer is full. Remove completed files before retrying.');chunks.push(r.value);d.got+=r.value.byteLength;d.speed=d.got/Math.max(.2,(Date.now()-d.startedAt)/1000);changed();}if(d.state==='cancelled')return;d.blob=new Blob(chunks,{type:d.type||'application/octet-stream'});d.total=d.got;d.state='done';d.err='';log('info','downloads','File received: '+d.name+' ('+d.got+' bytes)');if(on('dla'))dlSave(d);else feedback('File ready: '+d.name,d);}catch(e){if(d.state!=='cancelled'){d.state='failed';d.err=String(e.message||e);log('error','downloads',d.name+': '+d.err);feedback('Download failed: '+d.name);}if(reader)try{await reader.cancel();}catch(x){}}finally{chunks.length=0;delete d.cancel;changed();}};
+pump=async function(d,body){let reader=null;const chunks=[];try{if(d.total>LIMIT)throw Error('File exceeds the 1 GiB in-memory limit.');reader=body&&body.getReader?body.getReader():new Response(body).body.getReader();d.cancel=()=>{d.state='cancelled';reader.cancel().catch(()=>{});changed();};for(;;){const r=await reader.read();if(r.done||d.state==='cancelled')break;if(used()+r.value.byteLength>LIMIT)throw Error('1 GiB download buffer is full. Remove completed files before retrying.');chunks.push(r.value);d.got+=r.value.byteLength;d.speed=d.got/Math.max(.2,(Date.now()-d.startedAt)/1000);changed();}if(d.state==='cancelled')return;d.blob=new Blob(chunks,{type:d.type||'application/octet-stream'});d.total=d.got;d.state='done';d.err='';log('info','downloads','File received: '+d.name+' ('+d.got+' bytes)');if(on('dla'))dlSave(d);else feedback('File ready: '+d.name,d);}catch(e){if(d.state!=='cancelled'){d.state='failed';d.err=String(e.message||e);log('error','downloads',d.name+': '+d.err);feedback('Download failed: '+d.name);}if(reader)try{await reader.cancel();}catch(x){}}finally{chunks.length=0;delete d.cancel;changed();}};
 const oldDirect=dlDirect;dlDirect=function(url,blob,cd,ct){if(!/^\s*attachment/i.test(cd)&&!BIN.test(ct))return false;if(blob.size>LIMIT||used()+blob.size>LIMIT){const d=dlAdd(url,dlName(cd,url,ct),ct,blob.size);d.state='failed';d.err='File exceeds the in-memory download budget.';changed();return true;}const result=oldDirect(url,blob,cd,ct);if(result)changed();return result;};
 const oldIntercept=dlIntercept;dlIntercept=function(t,ctx,props){const r=props.response;if(r&&r.status>=400&&ctx.request&&ctx.request.mode==='navigate'){const g=k=>{try{return r.headers.get(k)||'';}catch(e){return '';}};if(/^\s*attachment/i.test(g('content-disposition'))||BIN.test(g('content-type').split(';')[0].trim())){const u=ctx.parsed.url.href,d=dlAdd(u,dlName(g('content-disposition'),u,g('content-type')),g('content-type'),0);d.state='failed';d.err='HTTP '+r.status+' '+(r.statusText||'')+' — no file was received.';log('error','downloads',d.err+' '+u);changed();return false;}}return oldIntercept(t,ctx,props);};
 setSetting('dlm','1');setSetting('dla','1');
@@ -15235,7 +15274,7 @@ function retry(id){const d=get(id);if(d&&d.state!=='active')go(active,d.url);}
 A.dcan=cancel;A.ddel=remove;A.dretry=retry;
 let tray=null;function openTray(value){if(!tray)return;tray.classList.toggle('open',value);if(value)renderTray();}
 function renderTray(){if(!tray||!tray.classList.contains('open'))return;const list=tray.querySelector('.dd-list');list.replaceChildren();for(const d of DLS.slice(0,40)){const row=document.createElement('article'),h=document.createElement('h4'),p=document.createElement('p'),actions=document.createElement('div');h.textContent=d.name;actions.className='dd-actions';let label=d.state==='active'?'Receiving':d.state==='cancelled'?'Cancelled':d.state==='failed'?'Failed':d.saveRequestedAt?'Save requested':d.blob?'Ready':'Not retained';p.textContent=label+' · '+sz(d.got||0)+(d.total?' / '+sz(d.total):'')+(d.state==='active'?' · '+sz(d.speed||0)+'/s':'');row.append(h,p);if(d.state==='active'){const bar=document.createElement('progress');if(d.total){bar.max=d.total;bar.value=d.got;}row.append(bar);}if(d.err){const err=document.createElement('p');err.className='dd-error';err.textContent=d.err;row.append(err);}const button=(label,fn)=>{const b=document.createElement('button');b.textContent=label;b.onclick=()=>{try{fn();}catch(e){feedback(e.message);}renderTray();};actions.append(b);};if(d.state==='active')button('Cancel',()=>cancel(d.id));else{if(d.blob)button('Save again',()=>dlSave(d));button('Retry from start',()=>retry(d.id));button('Remove',()=>remove(d.id));}row.append(actions);list.append(row);}if(!DLS.length){const p=document.createElement('p');p.textContent='No downloads yet.';list.append(p);}}
-if(!EMBED){tray=document.createElement('section');tray.id='direct-download-tray';tray.className='pop';tray.setAttribute('aria-label','Downloads');const heading=document.createElement('h3'),note=document.createElement('p'),list=document.createElement('div');heading.textContent='Downloads';note.className='dd-note';note.textContent='Files save directly. “Save requested” is not OS confirmation. Keep this browser open; bytes are not retained after refresh. 128 MiB buffer limit.';list.className='dd-list';tray.append(heading,note,list);$('top').append(tray);$('b-downloads').onclick=()=>openTray(!tray.classList.contains('open'));dismissable(tray,[$('b-downloads')],()=>openTray(false));window.openDownloadManager=()=>openTray(true);}
+if(!EMBED){tray=document.createElement('section');tray.id='direct-download-tray';tray.className='pop';tray.setAttribute('aria-label','Downloads');const heading=document.createElement('h3'),note=document.createElement('p'),list=document.createElement('div');heading.textContent='Downloads';note.className='dd-note';note.textContent='Files save directly. “Save requested” is not OS confirmation. Keep this browser open; bytes are not retained after refresh. 1 GiB buffer limit.';list.className='dd-list';tray.append(heading,note,list);$('top').append(tray);$('b-downloads').onclick=()=>openTray(!tray.classList.contains('open'));dismissable(tray,[$('b-downloads')],()=>openTray(false));window.openDownloadManager=()=>openTray(true);}
 function transmit(d){if(!peer||!d.blob)return;parent.postMessage({__directDl:1,kind:'file',id:d.id,nonce,token:peer.token,name:nameOf(d.name),type:d.type,blob:d.blob},peer.origin==='null'?'*':peer.origin);}
 function ask(event,message){if(peer)return peer.token===message.token&&peer.origin===event.origin;if(denied||pending)return false;pending={event,message};const dialog=document.createElement('dialog');dialog.id='direct-download-permission';const h=document.createElement('h2'),p=document.createElement('p'),actions=document.createElement('div'),allow=document.createElement('button'),deny=document.createElement('button');h.textContent='Allow direct downloads to this launcher?';p.textContent='Origin: '+(event.origin==='null'?'local or sandboxed launcher (opaque origin)':event.origin)+'. Allow only for a launcher you opened and trust. Completed files from this embedded session will be sent there and immediately handed to the browser for saving.';actions.className='actions';allow.textContent='Allow this session';deny.textContent='Deny';function reject(){denied=true;pending=null;dialog.close();dialog.remove();feedback('Download sharing denied. Reload this hosted session to approve later.');}deny.onclick=reject;dialog.addEventListener('cancel',e=>{e.preventDefault();reject();});allow.onclick=()=>{const saved=pending;pending=null;peer={token:saved.message.token,origin:saved.event.origin};dialog.close();dialog.remove();for(const d of queued.values())transmit(d);};actions.append(deny,allow);dialog.append(h,p,actions);document.body.append(dialog);dialog.showModal();return false;}
 window.addEventListener('message',event=>{const m=event.data;if(!m||m.__directDl!==1)return;
@@ -15243,7 +15282,7 @@ window.addEventListener('message',event=>{const m=event.data;if(!m||m.__directDl
  let origin;try{origin=new URL(hostedURL()).origin;}catch(e){return;}if(event.origin!==origin)return;const t=tabs.find(t=>t.hosted&&t.frame.contentWindow===event.source);if(!t)return;
  if(m.kind==='offer'&&typeof m.nonce==='string'&&m.nonce.length>=16){offers.set(t.id+':'+m.id,m.nonce);event.source.postMessage({__directDl:1,kind:'accept',id:m.id,nonce:m.nonce,token:ticket},origin);return;}
  if(m.kind!=='file'||m.token!==ticket||offers.get(t.id+':'+m.id)!==m.nonce||!(m.blob instanceof Blob))return;const key=t.id+':'+m.nonce+':'+m.id;if(received.has(key))return;received.add(key);
- try{if(used()+m.blob.size>LIMIT)throw Error('Local download buffer is full. Remove completed files from the Downloads tray.');const d=dlAdd(t.url,nameOf(m.name),m.type||m.blob.type,m.blob.size);d.got=m.blob.size;d.blob=m.blob;d.state='done';saveLocal(d);event.source.postMessage({__directDl:1,kind:'save-requested',id:m.id,nonce:m.nonce,token:ticket},origin);feedback('Save requested: '+d.name,d);}catch(e){log('error','downloads',String(e.message||e));feedback('Save failed: '+e.message);event.source.postMessage({__directDl:1,kind:'error',id:m.id,nonce:m.nonce,token:ticket,error:String(e.message||e)},origin);}
+ try{if(used()+m.blob.size>LIMIT)throw Error('Local download buffer is full (1 GiB). Remove completed files from the Downloads tray.');const d=dlAdd(t.url,nameOf(m.name),m.type||m.blob.type,m.blob.size);d.got=m.blob.size;d.blob=m.blob;d.state='done';saveLocal(d);event.source.postMessage({__directDl:1,kind:'save-requested',id:m.id,nonce:m.nonce,token:ticket},origin);feedback('Save requested: '+d.name,d);}catch(e){log('error','downloads',String(e.message||e));feedback('Save failed: '+e.message);event.source.postMessage({__directDl:1,kind:'error',id:m.id,nonce:m.nonce,token:ticket,error:String(e.message||e)},origin);}
 });
 })();</script><script id="motes-field">(() => {
   const home = document.getElementById('ntp'), cv = document.getElementById('motes');
@@ -15307,7 +15346,7 @@ window.addEventListener('message',event=>{const m=event.data;if(!m||m.__directDl
  <div class="sh"><h3>Chat</h3><div class="hx-actions"><button type="button" id="hx-chat-leave" class="btn sm" title="Disconnect and clear local messages">Leave</button><button type="button" id="hx-chat-close" class="ib" aria-label="Close chat">×</button></div></div>
  <div id="hx-chat-statusbar"><i aria-hidden="true"></i><span id="hx-chat-status" role="status">Choose a name to join.</span><button type="button" id="hx-chat-retry" class="btn sm" hidden>Retry</button></div>
  <div id="hx-chat-messages" role="log" aria-label="Chat messages" aria-live="polite"><div id="hx-chat-empty"><strong>A little space to talk.</strong><span>Messages appear here as people send them.</span></div></div>
- <div id="hx-chat-compose-wrap"><div id="hx-chat-gifs" hidden role="dialog" aria-label="Choose a GIF"><div class="gh"><input id="hx-gif-q" type="search" placeholder="Search GIFs" autocomplete="off" maxlength="80" aria-label="Search GIFs"><button type="button" id="hx-gif-x" class="ib" aria-label="Close GIF picker">×</button></div><div id="hx-gif-key" hidden><input id="hx-gif-keyin" type="password" autocomplete="off" spellcheck="false" placeholder="GIPHY API key" aria-label="GIPHY API key"><button type="button" id="hx-gif-keysave" class="btn sm">Save</button></div><div id="hx-gif-grid"></div><div id="hx-gif-status" role="status" hidden></div><div class="gf">Powered by GIPHY</div></div><form id="hx-chat-compose"><button type="button" id="hx-chat-gif" class="btn" aria-label="Add a GIF" aria-expanded="false" aria-controls="hx-chat-gifs" title="Add a GIF" disabled>GIF</button><textarea id="hx-chat-message" aria-label="Message" placeholder="Write a message…" rows="1" maxlength="500" disabled></textarea><button type="submit" id="hx-chat-send" class="btn" disabled>Send</button></form><div id="hx-chat-meta"><span>Messages disappear after 5 minutes</span><span id="hx-chat-counter">0 / 250</span></div></div>
+ <div id="hx-chat-compose-wrap"><div id="hx-chat-gifs" hidden role="dialog" aria-label="Choose a GIF"><div class="gh"><input id="hx-gif-q" type="text" name="hx-gif-search" inputmode="search" enterkeyhint="search" placeholder="Search GIFs" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" data-lpignore="true" data-1p-ignore="true" data-bwignore="true" data-form-type="other" maxlength="80" aria-label="Search GIFs"><button type="button" id="hx-gif-x" class="ib" aria-label="Close GIF picker">×</button></div><div id="hx-gif-key" hidden><input id="hx-gif-keyin" type="text" name="hx-giphy-key" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" data-lpignore="true" data-1p-ignore="true" data-bwignore="true" data-form-type="other" placeholder="GIPHY API key" aria-label="GIPHY API key" style="-webkit-text-security:disc"><button type="button" id="hx-gif-keysave" class="btn sm">Save</button></div><div id="hx-gif-grid"></div><div id="hx-gif-status" role="status" hidden></div><div class="gf">Powered by GIPHY</div></div><form id="hx-chat-compose"><button type="button" id="hx-chat-gif" class="btn" aria-label="Add a GIF" aria-expanded="false" aria-controls="hx-chat-gifs" title="Add a GIF" disabled>GIF</button><textarea id="hx-chat-message" aria-label="Message" placeholder="Write a message…" rows="1" maxlength="500" disabled></textarea><button type="submit" id="hx-chat-send" class="btn" disabled>Send</button></form><div id="hx-chat-meta"><span>Messages disappear after 5 minutes</span><span id="hx-chat-counter">0 / 250</span></div></div>
  <p id="hx-chat-privacy">Recent history is shared from connected peers’ memory, not browser storage. Names are unverified; peers may learn your IP and retain copies. Closing keeps you connected; Leave disconnects.</p>
 <div role="dialog" aria-modal="false" hidden id="hx-chat-name-dialog" aria-labelledby="hx-chat-name-title"><form id="hx-chat-name-form"><h3 id="hx-chat-name-title">Join the conversation.</h3><p>Pick a name and you’re in. No account needed.</p><label id="hx-chat-name-label" for="hx-chat-name">Your name</label><input id="hx-chat-name" name="chatName" autocomplete="off" maxlength="48" required placeholder="What should we call you?"><p id="hx-chat-name-error" role="alert"></p><div id="hx-chat-name-buttons"><button type="button" id="hx-chat-name-cancel" class="btn">Cancel</button><button type="submit" class="btn" id="hx-chat-name-enter">Enter chat</button></div></form></div></aside>
 

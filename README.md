@@ -75,3 +75,9 @@ Local test: `python3 -m http.server 8080` in this folder, then open http://local
 * The GIPHY key is `GIPHY_KEY` at the top of the `hx-chat-runtime` script. It is visible to anyone who views the page
   source, which is normal for GIPHY keys; a beta key is limited to about 100 requests per hour.
 * Only https images on giphy.com are accepted from other peers (`GIF_HOST` in the same script).
+
+## Build 22 fixes
+
+* Links that want a new window (target=_blank, `<base target>`, named targets, ctrl/shift/middle click, GET forms with a target) and `window.open` calls without popup features now open as a tab inside this browser. Sign-in popups that ask for a size still open as the floating window. Real addresses are recovered with `$scramjet.unrewriteUrl`, so the tab never gets a proxied-prefix address.
+* Downloads: more file types are recognised (exe/msi/dmg/iso/torrent/zst/force-download ...), iframe/document requests count as navigations too, and a caught download now has its Content-Disposition/Content-Type/Length stripped from the 204 stand-in so the real browser cannot start a second, empty download. The Logs panel prints `caught a download: <name>` (source `downloads`).
+* GIF search: the search box is a plain text field and the GIPHY key box is no longer `type=password` (that hidden password field made password managers treat the search box as a login username). Both carry autocomplete=off and the 1Password/LastPass/Bitwarden ignore flags.
